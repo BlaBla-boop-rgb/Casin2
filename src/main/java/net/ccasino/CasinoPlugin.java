@@ -37,7 +37,7 @@ public final class CasinoPlugin extends JavaPlugin implements Listener {
 	private final Map<UUID, Session> sessions = new HashMap<>();
 	private final Map<UUID, Integer> betIndex = new HashMap<>();
 	private final Map<UUID, Double> customBet = new HashMap<>();
-	private final Set<UUID> packLoaded = new HashSet<>();
+	private final Set<UUID> packFailed = new HashSet<>();
 	private double[] chips = {10, 50, 100, 500, 1000};
 	private ResourcePackInfo packInfo;
 	private UUID packId;
@@ -98,23 +98,46 @@ public final class CasinoPlugin extends JavaPlugin implements Listener {
 		if (getConfig().getBoolean("resource-pack.enabled", true) && url != null && !url.isBlank()) {
 			String u = url.trim();
 			packId = UUID.nameUUIDFromBytes(("ccasino:" + u).getBytes(StandardCharsets.UTF_8));
+			final URI uri;
 			try {
-				// sofort ohne Prüfsumme nutzbar – die Prüfsumme wird im Hintergrund nachgereicht
-				packInfo = ResourcePackInfo.resourcePackInfo().id(packId).uri(URI.create(u)).build();
-				getLogger().info("Casino-Resourcepack: " + u);
-				ResourcePackInfo.resourcePackInfo().id(packId).uri(URI.create(u)).computeHashAndBuild()
-						.whenComplete((info, err) -> {
-							if (err != null) {
-								getLogger().warning("Prüfsumme des Casino-Packs nicht berechenbar (" + err.getMessage() + ") – wird ohne Prüfsumme gesendet.");
-							} else {
-								packInfo = info;
-								getLogger().info("Casino-Resourcepack bereit (SHA-1 " + info.hash() + ").");
-							}
-						});
+				uri = URI.create(u);
 			} catch (Exception ex) {
-				packInfo = null;
-				getLogger().warning("Ungültige Resourcepack-URL: " + u);
+				getLogger().warning("Ungültige Resourcepack-URL: " + u + " (" + ex.getMessage() + ")");
+				return;
 			}
+			getLogger().info("Casino-Resourcepack: " + u + " – lade zum Prüfen herunter …");
+			final UUID id = packId;
+			// Zip im Hintergrund laden und SHA-1 selbst berechnen (Adventure verlangt eine Prüfsumme)
+			Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+				String hash;
+				try {
+					java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+							.followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+							.connectTimeout(java.time.Duration.ofSeconds(15)).build();
+					java.net.http.HttpResponse<byte[]> res = client.send(
+							java.net.http.HttpRequest.newBuilder(uri).timeout(java.time.Duration.ofSeconds(60)).GET().build(),
+							java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+					if (res.statusCode() != 200) throw new IllegalStateException("HTTP " + res.statusCode());
+					byte[] digest = java.security.MessageDigest.getInstance("SHA-1").digest(res.body());
+					StringBuilder hex = new StringBuilder();
+					for (byte b : digest) hex.append(String.format("%02x", b));
+					hash = hex.toString();
+					getLogger().info("Casino-Resourcepack bereit (" + res.body().length / 1024 + " KB, SHA-1 " + hash + ").");
+				} catch (Exception ex) {
+					hash = "";
+					getLogger().warning("Casino-Pack konnte nicht geprüft werden (" + ex + ") – wird ohne Prüfsumme gesendet.");
+				}
+				final String h = hash;
+				Bukkit.getScheduler().runTask(this, () -> {
+					try {
+						packInfo = ResourcePackInfo.resourcePackInfo().id(id).uri(uri).hash(h).build();
+					} catch (Exception ex) {
+						getLogger().warning("Casino-Pack-Info konnte nicht erstellt werden: " + ex);
+						return;
+					}
+					for (Player online : Bukkit.getOnlinePlayers()) sendPack(online);
+				});
+			});
 		} else {
 			getLogger().info("Kein Casino-Resourcepack eingestellt – das Casino läuft im Vanilla-Look.");
 		}
@@ -218,7 +241,7 @@ public final class CasinoPlugin extends JavaPlugin implements Listener {
 	// ------------------------------------------------------------------ Resourcepack
 
 	public boolean fancy(Player p) {
-		return packInfo != null && packLoaded.contains(p.getUniqueId());
+		return packInfo != null && !packFailed.contains(p.getUniqueId());
 	}
 
 	private void sendPack(Player p) {
@@ -244,9 +267,15 @@ public final class CasinoPlugin extends JavaPlugin implements Listener {
 	@EventHandler
 	public void onPackStatus(PlayerResourcePackStatusEvent e) {
 		if (packId == null || !packId.equals(e.getID())) return;
+		UUID id = e.getPlayer().getUniqueId();
+		getLogger().info("Casino-Pack bei " + e.getPlayer().getName() + ": " + e.getStatus());
 		switch (e.getStatus()) {
-			case SUCCESSFULLY_LOADED -> packLoaded.add(e.getPlayer().getUniqueId());
-			case DECLINED, FAILED_DOWNLOAD, INVALID_URL, FAILED_RELOAD, DISCARDED -> packLoaded.remove(e.getPlayer().getUniqueId());
+			case SUCCESSFULLY_LOADED -> packFailed.remove(id);
+			case DECLINED, FAILED_DOWNLOAD, INVALID_URL, FAILED_RELOAD, DISCARDED -> {
+				packFailed.add(id);
+				e.getPlayer().sendMessage(Tiles.text("§6[Casino] §cDas Casino-Pack konnte nicht geladen werden (§e" + e.getStatus()
+						+ "§c). §7Das Casino läuft im einfachen Look. §8/casino pack §7= erneut versuchen"));
+			}
 			default -> { }
 		}
 	}
@@ -255,13 +284,30 @@ public final class CasinoPlugin extends JavaPlugin implements Listener {
 	public void onQuit(PlayerQuitEvent e) {
 		Session s = sessions.remove(e.getPlayer().getUniqueId());
 		if (s != null) s.finishAll();
-		packLoaded.remove(e.getPlayer().getUniqueId());
+		packFailed.remove(e.getPlayer().getUniqueId());
 	}
 
 	// ------------------------------------------------------------------ Befehl
 
 	@Override
 	public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
+		if (args.length > 0 && args[0].equalsIgnoreCase("setpack")) {
+			if (!sender.hasPermission("casino.admin")) {
+				sender.sendMessage(Tiles.text("§cDazu hast du keine Rechte."));
+				return true;
+			}
+			if (args.length < 2 || !args[1].startsWith("http")) {
+				sender.sendMessage(Tiles.text("§6[Casino] §7Benutzung: §e/casino setpack <Raw-Link zur CasinoPack.zip>"));
+				return true;
+			}
+			getConfig().set("resource-pack.enabled", true);
+			getConfig().set("resource-pack.url", args[1].trim());
+			saveConfig();
+			loadSettings();
+			sender.sendMessage(Tiles.text("§6[Casino] §aPack-Link gespeichert. §7Wird jetzt an alle Spieler geschickt."));
+			for (Player online : Bukkit.getOnlinePlayers()) sendPack(online);
+			return true;
+		}
 		if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
 			if (!sender.hasPermission("casino.admin")) {
 				sender.sendMessage(Tiles.text("§cDazu hast du keine Rechte."));
@@ -286,7 +332,9 @@ public final class CasinoPlugin extends JavaPlugin implements Listener {
 			return true;
 		}
 		if (args.length > 0 && args[0].equalsIgnoreCase("pack")) {
-			if (packInfo == null) p.sendMessage(Tiles.text("§6[Casino] §7Auf diesem Server ist kein Casino-Pack eingestellt."));
+			String url = getConfig().getString("resource-pack.url", "");
+			if (packInfo == null && url != null && !url.isBlank()) p.sendMessage(Tiles.text("§6[Casino] §7Das Casino-Pack wird gerade vorbereitet – gleich nochmal versuchen."));
+			else if (packInfo == null) p.sendMessage(Tiles.text("§6[Casino] §7Auf diesem Server ist kein Casino-Pack eingestellt."));
 			else sendPack(p);
 			return true;
 		}
