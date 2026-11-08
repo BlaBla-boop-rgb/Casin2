@@ -1,0 +1,19 @@
+name: CraftCasino
+version: '${version}'
+main: net.ccasino.CasinoPlugin
+api-version: '1.21'
+description: Animiertes Truhen-Casino mit Slots, Roulette, Blackjack und Crash (Vault-Economy)
+depend: [Vault]
+commands:
+  casino:
+    description: Öffnet das Casino
+    aliases: [ccasino]
+    usage: /casino [einsatz <Betrag>|pack|reload]
+    permission: casino.use
+permissions:
+  casino.use:
+    description: Casino benutzen
+    default: true
+  casino.admin:
+    description: /casino reload
+    default: op

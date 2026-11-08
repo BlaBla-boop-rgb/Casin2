@@ -1,0 +1,23 @@
+# Craft Casino – Einstellungen
+
+# Einsatz-Chips (genau 5 Werte, aufsteigend). Die Beschriftung auf den Chip-Texturen
+# im Resourcepack ist 10 / 50 / 100 / 500 / 1K – der echte Wert steht immer im Item-Namen.
+chips: [10, 50, 100, 500, 1000]
+
+# Eigener Einsatz (Knopf "Eigener Einsatz" oder /casino einsatz <Betrag>)
+min-bet: 1
+# 0 = kein Limit
+max-bet: 0
+
+resource-pack:
+  # Das Plugin schickt das CasinoPack zusätzlich zu deinem Server-Resourcepack (z. B. ClansPack).
+  enabled: true
+  # Direkter Download-Link zur CasinoPack.zip, z. B. ein GitHub-"raw"-Link:
+  # https://raw.githubusercontent.com/<Name>/<Repo>/main/CasinoPack.zip
+  url: ""
+  # true = Spieler werden gekickt, wenn sie das Pack ablehnen
+  required: false
+  prompt: "§6Craft Casino §7braucht ein kleines Texturpaket für Tisch, Karten und Chips."
+
+# Crash: maximaler Multiplikator
+crash-max: 50.0
